@@ -68,7 +68,7 @@ O RabbitMQ é compartilhado pela equipe e não é criado por estes manifests. O 
     kubectl apply -f k8s/02-app.yaml
     kubectl apply -f k8s/03-ingress.yaml
 
-O Deployment B usa três réplicas. O Service ClusterIP chama-se `ms-catalog-service`; `/instance` ajuda a identificar qual Pod respondeu. As APIs externas passam pelo NGINX Ingress Controller. O Ingress deste serviço usa os caminhos `/api/catalog` e `/health`; combinar host e caminhos com o restante da equipe.
+O Deployment B usa três réplicas. O Service ClusterIP chama-se `ms-catalog-service`; `/instance` ajuda a identificar qual Pod respondeu. As APIs externas passam pelo NGINX Ingress Controller no caminho `/api/catalog`. `/health` fica reservado às probes internas do Kubernetes para evitar colisão com outros serviços. Ver `INTEGRATION_PROPOSAL.md` para o contrato proposto com A e C.
 
 Os valores de senha em `k8s/01-database.yaml` e `k8s/02-app.yaml` são exemplos. Substituí-los por Secrets do ambiente antes de implantar no EKS. `DATABASE_URL` aponta ao PostgreSQL exclusivo do B: `db` no Compose e `ms-catalog-db-service` no Kubernetes.
 

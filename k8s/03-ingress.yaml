@@ -14,10 +14,3 @@ spec:
                 name: ms-catalog-service
                 port:
                   number: 8080
-          - path: /health
-            pathType: Exact
-            backend:
-              service:
-                name: ms-catalog-service
-                port:
-                  number: 8080
