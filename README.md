@@ -1,62 +1,80 @@
 # MS Catalog Stock
 
-Microsserviço B de Catálogo/Estoque. Responsabilidade: manter seu próprio catálogo e quantidade disponível, responder à consulta síncrona de disponibilidade feita pelo serviço de pedidos e registrar reservas de estoque.
+Microsserviço B de Catálogo/Estoque em Python/FastAPI e PostgreSQL. Mantém seu catálogo e estoque, atende consultas REST do serviço de pedidos e registra reservas. Cada serviço mantém sua própria persistência; este serviço não acessa o MySQL do serviço A nem o MongoDB do serviço C.
 
-## Contrato inicial
+## APIs
 
-- GET /health — estado da API, conexão PostgreSQL e nome do Pod.
-- GET /instance — identificador do Pod para demonstrar múltiplas réplicas.
-- POST /api/catalog/products — cadastrar produto.
-- GET /api/catalog/products — listar produtos.
-- GET /api/catalog/products/{id} — consultar produto.
-- GET /api/catalog/products/{id}/availability?quantity=2 — verificar disponibilidade sem reservar.
-- POST /api/catalog/products/{id}/reservations — reservar quantidade para um pedido.
-- GET /api/catalog/reservations/{order_id} — consultar reservas de um pedido.
+- `GET /health` — estado da API, conexão PostgreSQL e nome do Pod.
+- `GET /instance` — identificador do Pod para demonstrar múltiplas réplicas.
+- `POST /api/catalog/products` — cadastrar produto.
+- `GET /api/catalog/products` — listar produtos.
+- `GET /api/catalog/products/{id}` — consultar produto.
+- `GET /api/catalog/products/{id}/availability?quantity=2` — verificar disponibilidade sem reservar.
+- `POST /api/catalog/products/{id}/reservations` — reservar quantidade para um pedido.
+- `GET /api/catalog/reservations/{order_id}` — consultar reservas de um pedido.
 
-O serviço de pedidos pode consultar a disponibilidade por Service Discovery:
+O Microsserviço A pode consultar disponibilidade por Service Discovery dentro do cluster:
 
     http://ms-catalog-service:8080/api/catalog/products/{id}/availability?quantity={quantidade}
 
-Quando a equipe alinhar o contrato, revisar rota, formato de identificador, payload de evento e códigos HTTP com o integrante responsável pelo serviço A.
+As rotas, o identificador do produto e o payload REST devem ser alinhados com quem implementa o serviço A.
+
+## Evento RabbitMQ
+
+Quando uma reserva é confirmada, a API salva a reserva e o evento na mesma transação PostgreSQL. Um publicador em segundo plano envia eventos pendentes ao exchange tópico durável `app.events`, com a routing key `catalog.stock.reserved` e confirmação do broker. Se o RabbitMQ estiver indisponível, o evento fica na tabela outbox e será tentado novamente. Falhas de confirmação podem levar a uma nova entrega; consumidores devem deduplicar usando `event_id`.
+
+Formato do corpo da mensagem:
+
+```json
+{
+  "event_id": "uuid",
+  "event_type": "catalog.stock.reserved",
+  "occurred_at": "data e hora ISO 8601",
+  "data": {
+    "reservation_id": 1,
+    "order_id": "identificador do pedido",
+    "product_id": 1,
+    "sku": "SKU-001",
+    "quantity": 2,
+    "remaining_quantity": 8
+  }
+}
+```
+
+O Microsserviço C deve declarar uma fila durável e vinculá-la ao exchange `app.events` com a routing key `catalog.stock.reserved`. Ao gravar o evento no MongoDB, pode usar `event_id` como chave de idempotência. Confirmar esse contrato e os nomes de exchange/fila com quem implementa C.
 
 ## Executar localmente
 
-Na pasta ms-catalog-stock, criar um ambiente com Docker Compose:
+Na raiz do projeto:
 
     docker compose up --build
 
-Documentação OpenAPI:
+Documentação OpenAPI: `http://localhost:8080/docs`. O Compose inicia a API, seu PostgreSQL próprio e RabbitMQ local. O painel do RabbitMQ fica em `http://localhost:15672`; usuário e senha `catalog` são somente para desenvolvimento local.
 
-    http://localhost:8080/docs
+Fluxo manual REST:
 
-O Compose sobe somente a API B e seu PostgreSQL próprio. RabbitMQ pertence ao fluxo assíncrono da equipe; este serviço não publica nem consome mensagens no contrato inicial.
+1. Criar produto em `POST /api/catalog/products` com SKU, nome, preço e quantidade.
+2. Consultar `GET /api/catalog/products/{id}/availability?quantity=2`.
+3. Reservar em `POST /api/catalog/products/{id}/reservations` com `order_id` e `quantity`.
+4. Consultar novamente a disponibilidade e `GET /api/catalog/reservations/{order_id}`.
+5. Confirmar no RabbitMQ que chegou uma mensagem com routing key `catalog.stock.reserved` depois que houver uma fila vinculada ao exchange `app.events`.
 
-## Teste manual do fluxo REST
+## Kubernetes / Amazon EKS
 
-1. Criar produto em POST /api/catalog/products com SKU, nome, preço e quantidade.
-2. Consultar GET /api/catalog/products/{id}/availability?quantity=2.
-3. Reservar com POST /api/catalog/products/{id}/reservations usando order_id e quantity.
-4. Consultar novamente disponibilidade e GET /api/catalog/reservations/{order_id}.
-
-## Kubernetes
-
-Os manifests estão em k8s. Aplicar o banco antes da aplicação:
+O RabbitMQ é compartilhado pela equipe e não é criado por estes manifests. O cluster deve oferecer um Service chamado `rabbitmq` no mesmo namespace, com credenciais compatíveis com `RABBITMQ_URL`; se nomes ou credenciais forem diferentes, ajustar o Secret `ms-catalog-runtime` em `k8s/02-app.yaml`. Aplicar o banco, a aplicação e o Ingress:
 
     kubectl apply -f k8s/01-database.yaml
     kubectl rollout status deployment/ms-catalog-db
     kubectl apply -f k8s/02-app.yaml
     kubectl apply -f k8s/03-ingress.yaml
 
-O Deployment da API inicia com três réplicas para facilitar a demonstração de escalabilidade e balanceamento. Os Pods compartilham somente o banco deste serviço. O hostname retornado em /health e /instance permite observar qual réplica atendeu.
+O Deployment B usa três réplicas. O Service ClusterIP chama-se `ms-catalog-service`; `/instance` ajuda a identificar qual Pod respondeu. As APIs externas passam pelo NGINX Ingress Controller. O Ingress deste serviço usa os caminhos `/api/catalog` e `/health`; combinar host e caminhos com o restante da equipe.
 
-## Configuração
+Os valores de senha em `k8s/01-database.yaml` e `k8s/02-app.yaml` são exemplos. Substituí-los por Secrets do ambiente antes de implantar no EKS. `DATABASE_URL` aponta ao PostgreSQL exclusivo do B: `db` no Compose e `ms-catalog-db-service` no Kubernetes.
 
-DATABASE_URL aponta ao banco PostgreSQL exclusivo deste serviço. Em Docker Compose, o host é db; no Kubernetes, ms-catalog-db-service. Os valores simples de desenvolvimento nos manifests precisam ser substituídos por Secret próprio do ambiente antes do deploy compartilhado.
+## Próximos alinhamentos da equipe
 
-## Decisões ainda a alinhar com a equipe
-
-- Confirmar linguagem e banco para garantir que a equipe atenda diversidade tecnológica.
-- Confirmar rota e payload REST com o Microsserviço A.
-- Confirmar se B também reserva estoque durante criação do pedido ou apenas valida disponibilidade.
-- Confirmar qual serviço será usado para demonstrar três réplicas; o manifesto atual deixa B com três.
-- Definir domínio e acesso do Ingress compartilhado, evitando conflito de caminhos.
+- A deve confirmar a chamada REST: identificador do produto, quantidade, resposta de disponibilidade e quando cria/reserva o pedido.
+- C deve confirmar o consumo de `catalog.stock.reserved`, a fila durável, o exchange compartilhado e a deduplicação por `event_id` no MongoDB.
+- A equipe deve implantar o RabbitMQ uma vez no EKS, manter os bancos isolados por serviço e confirmar os Secrets e nomes DNS.
+- Confirmar que B será a demonstração das três réplicas (já configuradas), o host compartilhado do Ingress e o processo de publicação da imagem Docker no registry usado pelo EKS.

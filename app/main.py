@@ -1,5 +1,9 @@
+import asyncio
+import logging
 import os
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from sqlalchemy import select, text
@@ -7,7 +11,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.database import Base, engine, get_session
-from app.models import Product, Reservation
+from app.models import OutboxEvent, Product, Reservation
+from app.outbox import publish_outbox_forever
 from app.schemas import (
     AvailabilityRead,
     HealthRead,
@@ -17,17 +22,27 @@ from app.schemas import (
     ReservationRead,
 )
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     # Convenient for this teaching project. Use migrations for a production rollout.
     Base.metadata.create_all(bind=engine)
-    yield
+    publisher_task = asyncio.create_task(publish_outbox_forever())
+    try:
+        yield
+    finally:
+        publisher_task.cancel()
+        try:
+            await publisher_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(
     title="MS Catalog Stock",
-    description="Product catalog and stock validation for the MyTracker team project.",
+    description="Product catalog and stock validation for the team project.",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -169,6 +184,29 @@ def reserve_stock(
     )
     session.add(reservation)
     try:
+        session.flush()
+        event_id = str(uuid4())
+        event_type = "catalog.stock.reserved"
+        event_payload = {
+            "event_id": event_id,
+            "event_type": event_type,
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "data": {
+                "reservation_id": reservation.id,
+                "order_id": reservation.order_id,
+                "product_id": product.id,
+                "sku": product.sku,
+                "quantity": reservation.quantity,
+                "remaining_quantity": product.available_quantity,
+            },
+        }
+        session.add(
+            OutboxEvent(
+                id=event_id,
+                event_type=event_type,
+                payload=event_payload,
+            )
+        )
         session.commit()
     except IntegrityError as exc:
         session.rollback()
@@ -176,6 +214,13 @@ def reserve_stock(
             status_code=status.HTTP_409_CONFLICT,
             detail="A reservation for this order and product already exists",
         ) from exc
+    except Exception:
+        session.rollback()
+        logger.exception("Could not save reservation and outbox event")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not save the reservation",
+        )
     session.refresh(reservation)
     return reservation
 
