@@ -4,8 +4,8 @@ metadata:
   name: ms-catalog-runtime
 type: Opaque
 stringData:
-  RABBITMQ_URL: amqp://catalog:replace-this-for-your-environment@rabbitmq:5672/
-  RABBITMQ_EXCHANGE: app.events
+  RABBITMQ_URL: amqp://catalog:replace-this-for-your-environment@rabbitmq-service:5672/
+  RABBITMQ_EXCHANGE: app_events_exchange
 ---
 apiVersion: apps/v1
 kind: Deployment

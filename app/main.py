@@ -188,12 +188,12 @@ def reserve_stock(
         event_id = str(uuid4())
         event_type = "catalog.stock.reserved"
         event_payload = {
+            "order_id": reservation.order_id,
             "event_id": event_id,
             "event_type": event_type,
-            "occurred_at": datetime.now(timezone.utc).isoformat(),
-            "data": {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "payload": {
                 "reservation_id": reservation.id,
-                "order_id": reservation.order_id,
                 "product_id": product.id,
                 "sku": product.sku,
                 "quantity": reservation.quantity,

@@ -61,13 +61,15 @@ Sucesso retorna `201 Created` e a reserva. Produto inexistente/inativo retorna `
 
 ## Contrato RabbitMQ B → C
 
-- Exchange: `app.events` (tipo `topic`, durável).
+- Exchange: `app_events_exchange` (tipo `topic`, durável), igual ao configurado no repositório C.
 - Routing key: `catalog.stock.reserved`.
-- Fila durável sugerida para C: `notifications.catalog-stock-reserved`.
-- C vincula essa fila à routing key, persiste por `event_id` no MongoDB e só então confirma a entrega.
+- Fila durável atual de C: `pedidos_events`, vinculada com `#`, então recebe essa routing key.
+- C persiste por `event_id` no MongoDB e só então confirma a entrega.
 - O publicador pode reenviar após falha de confirmação; o consumidor precisa deduplicar por `event_id`.
 
-O corpo da mensagem é documentado no README do Microsserviço B. A equipe deve confirmar se esse evento é suficiente para a notificação ou se C também precisa consumir `order.confirmed` publicado por A.
+O corpo da mensagem segue os campos `order_id`, `event_id`, `event_type` e `payload`, que o consumidor C já lê. Como B não conhece o usuário final, esse evento é adequado para auditoria/histórico; se C precisar gerar notificação para o cliente, A também deve publicar um evento de pedido contendo `user_id`.
+
+No código atual de C, uma falha de `save_notification` é registrada em log, mas a mensagem ainda é confirmada (`basic_ack`). Para não perder evento se o MongoDB falhar, C deve confirmar somente depois de salvar, e rejeitar/reencaminhar a mensagem em caso de falha conforme a política de retry que a equipe escolher.
 
 ## Kubernetes, Service Discovery e Ingress
 
@@ -75,9 +77,9 @@ Proposta de Services no mesmo namespace Kubernetes:
 
 - `ms-orders-service:8080` → API A.
 - `ms-catalog-service:8080` → API B.
-- `ms-notifications-service:8080` → API C (se C expuser API HTTP).
-- `rabbitmq:5672` → broker compartilhado.
-- `ms-orders-db-service`, `ms-catalog-db-service` e `ms-notifications-db-service` → bancos exclusivos de cada serviço.
+- `ms-notifications-service:80` → API C (Service expõe porta 80 e encaminha para o container na 8000).
+- `rabbitmq-service:5672` → broker compartilhado, nome usado pelo Deployment C.
+- `ms-orders-db-service` → MySQL exclusivo de A; `ms-catalog-db-service` → PostgreSQL exclusivo de B; `mongo-notification-service:27017` → MongoDB exclusivo de C.
 
 O host do Ingress é único e as regras separam as APIs por caminho:
 
@@ -94,5 +96,7 @@ Os endpoints de health ficam para probes internas do Kubernetes e não precisam 
 3. Criar e publicar as imagens de cada serviço em um registry acessível ao cluster (por exemplo, Amazon ECR).
 4. Usar um cluster EKS compartilhado ou criar um para a equipe; aplicar Secrets, bancos, RabbitMQ, Deployments, Services e Ingress no mesmo namespace.
 5. Demonstrar no EKS o pedido integrado, a mensagem persistida em C, os bancos isolados, o Ingress e as respostas atendidas por Pods diferentes.
+
+O manifesto RabbitMQ atual de C não cria credenciais de aplicação, e o Deployment usa `guest`. Antes de integrar Pods no EKS, definir usuário/senha próprios no broker e injetar o mesmo Secret em B e C; o RabbitMQ bloqueia `guest` em conexões remotas por padrão. Os dois Compose também publicam 5672/15672 e usam credenciais diferentes; para executar B e C juntos localmente, é preciso usar um broker compartilhado e alinhar as configurações.
 
 Antes de criar um EKS novo, verificar a estimativa de custo e se a equipe já tem uma conta/cluster AWS designado para a avaliação.

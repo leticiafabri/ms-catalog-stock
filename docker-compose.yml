@@ -27,7 +27,7 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://catalog:catalog@db:5432/catalog_db}
       RABBITMQ_URL: ${RABBITMQ_URL:-amqp://catalog:catalog@rabbitmq:5672/}
-      RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-app.events}
+      RABBITMQ_EXCHANGE: ${RABBITMQ_EXCHANGE:-app_events_exchange}
     ports:
       - "8080:8080"
     depends_on:
